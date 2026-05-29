@@ -584,7 +584,7 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
 
       <section id="builder-tiers-section" class="card">
         <div class="card-header">
-          <h2>&#x2B50; Star Tier Settings</h2>
+          <h2>&#x1F3F7;&#xFE0F; Tier Label Settings</h2>
         </div>
         <div class="card-body">
           <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
@@ -804,7 +804,7 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
         <p>The Roster table in this tab grows a <strong>Cost/Unit</strong> column. Enter your purchase price per pack, per Secret Lair envelope, or per commander deck. The Cost Summary card shows your total roster cost and a break-even per spot (cost ÷ 100). That break-even is the floor your spot prices need to clear &mdash; <em>before</em> you add givvies, employee costs, or your profit margin.</p>
 
         <h4>Star tiers</h4>
-        <p>Spots are ranked by expected value. The top N go to ⭐⭐⭐, next N to ⭐⭐, next N to ⭐, and the rest plain. You can tune N with the Star Tier Settings card. Default thresholds: top 10 / next 20 / next 30.</p>
+        <p>Spots are ranked by expected value. The top N go to ⭐⭐⭐, next N to ⭐⭐, next N to ⭐, and the rest plain. You can tune N with the Tier Label Settings card. Default thresholds: top 10 / next 20 / next 30.</p>
         <p>If a 3-star spot has a guaranteed hit (SLD card or precon card landing in that spot) priced at or above the notable threshold, the label gets a callout: <code>⭐⭐⭐01 Demonic Tutor Guaranteed Hit ⭐⭐⭐</code>.</p>
 
         <h4>Spot Labels table</h4>
@@ -3603,10 +3603,11 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
     dom.simResults.classList.remove('hidden');
     dom.simSpotsGrid.innerHTML = '';
 
-    // Order: numbered spots 00–99 in numeric order, then Bulk, then Last Spot if populated
+    // Sort numbered spots high to low by simulated final value, then pin Bulk
+    // and Last Spot to the end. Stable on ties via spotIndex.
     const numbered = simResult.results
       .filter(r => !r.isBulk && !r.isLastSpot)
-      .sort((a, b) => a.spotIndex - b.spotIndex);
+      .sort((a, b) => (b.finalValue || 0) - (a.finalValue || 0) || a.spotIndex - b.spotIndex);
     const bulk = simResult.results.find(r => r.isBulk);
     const last = simResult.results.find(r => r.isLastSpot);
 
@@ -3759,61 +3760,80 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
    * - precons  → "SETCODE Commander Precon x1"
    * - SLDs     → "Secret Lair: name x1"
    */
+  /**
+   * Group the roster into the four compact buckets used in WhatNot show notes:
+   *   - Play: non-collector boosters, aggregated by set code ("SOS x30, DFT x6")
+   *   - CBs:  collector boosters, aggregated by set code
+   *   - Precons: just the deck name (no set code), each entry separately
+   *   - SLDs: just the drop name, each entry separately
+   */
   function showNotesContentsLines() {
-    const lines = [];
-    let totalBoosters = 0;
+    const playByCode = new Map();
+    const cbByCode = new Map();
+    const preconEntries = [];
+    const sldEntries = [];
+
     for (const e of state.roster) {
       const q = e.quantity || 1;
       if (e.productType === 'booster') {
-        const code = (e.setCode || '').toUpperCase();
-        const setName = e.setName && e.setName !== code ? ` — ${e.setName}` : '';
-        const type = e.boosterType ? String(e.boosterType).replace(/booster/i,'').trim() || e.boosterType : '';
-        lines.push(`${code} ${type} x${q}${setName}`.replace(/\s+/g,' ').trim());
-        totalBoosters += q;
+        const code = (e.setCode || '').toUpperCase() || '?';
+        const isCollector = String(e.boosterType || '').toLowerCase().includes('collector');
+        const target = isCollector ? cbByCode : playByCode;
+        target.set(code, (target.get(code) || 0) + q);
       } else if (e.productType === 'commander_precon') {
-        const code = (e.setCode || '').toUpperCase();
-        const setName = e.setName && e.setName !== code ? ` — ${e.setName}` : '';
-        const deck = e.deckName ? ` "${e.deckName}"` : '';
-        lines.push(`${code} Commander Precon${deck} x${q}${setName}`);
+        const name = e.deckName || e.setName || (e.setCode || '').toUpperCase() || 'Precon';
+        preconEntries.push({ name, q });
       } else if (e.productType === 'secret_lair') {
         const name = e.dropName || e.dropKey || 'Drop';
-        const finish = e.finish && e.finish !== 'nonfoil' ? ` (${e.finish})` : '';
-        lines.push(`Secret Lair: ${name}${finish} x${q}`);
+        sldEntries.push({ name, q });
       }
     }
-    return { lines, totalBoosters };
+
+    const fmtMap = (m) => [...m.entries()].map(([code, q]) => `${code} x${q}`).join(', ');
+    return {
+      playLine: fmtMap(playByCode),
+      cbLine: fmtMap(cbByCode),
+      preconEntries,
+      sldEntries,
+    };
   }
 
   function generateShowNotes() {
-    const { lines: contents, totalBoosters } = showNotesContentsLines();
+    const { playLine, cbLine, preconEntries, sldEntries } = showNotesContentsLines();
     const tiers = state.starTiers || { three: 10, two: 20, one: 30 };
-    const insurance = parseFloat(dom.builderInsurance?.value || '5') || 5;
-    const insuranceStr = `$${insurance.toFixed(2)}`;
+    const labels = state.starLabels || { three: '⭐⭐⭐', two: '⭐⭐', one: '⭐' };
 
     const parts = [];
-    parts.push('Play Break Contents:');
-    if (contents.length === 0) {
-      parts.push('  (Add products to your roster — they will appear here)');
-    } else {
-      for (const line of contents) parts.push(line);
-      if (totalBoosters > 0) parts.push(`(${totalBoosters} boosters total)`);
+    if (playLine) {
+      parts.push('Play: ');
+      parts.push(playLine);
+      parts.push('');
     }
-    parts.push('');
-    parts.push('Collector Boosters added determined by break will be shown on screen!');
-    parts.push('');
-    parts.push(`⭐⭐⭐ = Top ${tiers.three} spots — biggest hits & most cards 🔥`);
-    parts.push(`⭐⭐ = Next ${tiers.two} spots — still hits often, decent upside 📈`);
-    parts.push(`⭐ = Next ${tiers.one} spots — outside shot, often not big value 🎯`);
+    if (preconEntries.length) {
+      parts.push('Precon: ');
+      for (const p of preconEntries) parts.push(p.q > 1 ? `${p.name} x${p.q}` : p.name);
+      parts.push('');
+    }
+    if (cbLine) {
+      parts.push('CBs: ');
+      parts.push(cbLine);
+      parts.push('');
+    }
+    if (sldEntries.length) {
+      parts.push('SLD');
+      for (const s of sldEntries) parts.push(s.q > 1 ? `${s.name} x${s.q}` : s.name);
+      parts.push('');
+    }
+    parts.push(`${labels.three} = Top ${tiers.three} spots: biggest hits & most cards 🔥`);
+    parts.push(`${labels.two} = Next ${tiers.two} spots: still hits often, decent upside 📈`);
+    parts.push(`${labels.one} = Next ${tiers.one} spots: outside shot, often not big value 🎯`);
     parts.push('NO STAR = Hard-to-hit spots, often insurance 🛟');
-    parts.push('');
-    parts.push('ANY SPOT CAN WIFF!!! THEY ARE BOOSTERS!! 🎲');
-    parts.push('');
+    parts.push('ANY SPOT CAN WIFF: THEY ARE PACKS! 🎲');
     parts.push('• Once all spots fill, all pictured packs are ripped LIVE 🎥');
     parts.push('• All Rares & Mythics (UNLESS LISTED OTHERWISE) are sorted by the last two digits of the collector number — "double digi" 🔢');
     parts.push('');
     parts.push('Any spot with no "hits" (Typically Rares/Mythics) receives:');
-    parts.push(`👉 ${insuranceStr} Pack Insurance 🎁`);
-    parts.push('');
+    parts.push(`👉 Play Pack Insurance 🎁`);
     parts.push('• No refunds after randomizer spins ⛔');
     parts.push('• Missed double-digi spots / art cards go to the FINAL SPOT SOLD 🏁');
     return parts.join('\n');
@@ -3934,9 +3954,9 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
     // Word-based markers get a space separator; emoji markers stay tight to the number.
     const sep = /[A-Za-z0-9]/.test(marker.charAt(0)) ? ' ' : '';
     if (tier === 3 && guaranteedHighlight) {
-      return `${marker}${sep}${num} ${guaranteedHighlight} Guaranteed Hit ${marker}`;
+      return `${marker}${sep}${num} ${guaranteedHighlight} Guaranteed Hit`;
     }
-    return `${marker}${sep}${num}${sep}${marker}`;
+    return `${marker}${sep}${num}`;
   }
 
   /**
@@ -4257,7 +4277,7 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
     // Build temp labels using the same rule as buildSpotLabel
     function previewLabel(num, marker) {
       const sep = /[A-Za-z0-9]/.test(marker.charAt(0)) ? ' ' : '';
-      return `${marker}${sep}${num}${sep}${marker}`;
+      return `${marker}${sep}${num}`;
     }
     preview.innerHTML = `Preview: <code>${escHtml(previewLabel('01', three))}</code> &middot; <code>${escHtml(previewLabel('67', two))}</code> &middot; <code>${escHtml(previewLabel('91', one))}</code>`;
   }
@@ -4735,7 +4755,7 @@ label { display: block; font-size: 0.8rem; font-weight: 500; color: var(--text-s
     },
     {
       target: '#builder-tiers-section',
-      title: 'Star Tier Settings',
+      title: 'Tier Label Settings',
       body: 'Decide how many spots get ⭐⭐⭐, ⭐⭐, ⭐, and plain labels. Defaults to top 10 / next 20 / next 30 / rest plain. Click <strong>Change Star Labels</strong> to swap stars for emoji (🔥🔥🔥) or words like "Nasty" / "Diabolical" / "Filthy".',
       placement: 'top'
     },
